@@ -1,4 +1,4 @@
-# Open Frame Window Counter (v0.3.0)
+# Open Frame Window Counter (v0.3.1)
 
 GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 
@@ -6,7 +6,7 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 1. GitHub에 빈 repository를 생성합니다 (예: open-fwc).
 2. 이 ZIP을 풀고 내부 파일 전체(CMakeLists.txt, mod.json, src, tests, .github 등)를 저장소 루트에 커밋합니다. .github/workflows/build.yml 누락 주의.
 3. Actions > Build OpenFWC > Run workflow (push to main 시 자동 실행).
-4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.3.0 ZIP을 받습니다.
+4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.3.1 ZIP을 받습니다.
 5. ZIP 안의 .geode를 Geode의 mods 폴더에 복사하고 게임을 재시작합니다. SDK 및 로더 버전 6.0.0을 사용하세요.
 
 ## 테스트 절차
@@ -65,14 +65,20 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - 버튼 상태 전환 확인은 점프/전체 물리 상태 일치를 보장하지 않습니다. Geode SDK 빌드 및 실제 게임 테스트는 아직 미검증입니다.
 
 
-## v0.3.0 — Native checkpoint restore probe (experimental)
+## v0.3.1 — Native checkpoint restore probe (experimental)
 
 - 기존 일반 모드 Recorder 및 Replay Engine 유지. 별도 opt-in 설정 `Checkpoint restore probe (test)`를 켜고 레벨에 다시 진입하면 동작합니다.
 - 로컬 클래식 레벨의 Practice Mode에서 GD 자체 createCheckpoint/markCheckpoint/loadFromCheckpoint 호출을 관찰합니다. 메모리를 강제 복사하거나 물리값을 변경하지 않습니다. 수동 복원 자체는 게임의 기존 사망 후 Practice 체크포인트 재시작을 사용합니다.
 - 자동 체크포인트를 끄고, 평평한 바닥을 달리다가 체크포인트를 하나만 놓습니다. 그 이후 입력하지 않습니다. 충분히 긴 평지 끝에 가시 하나를 배치해 `CP | READY` 이후 자연스럽게 사망하도록 하세요.
 - 최초 120개의 non-half processCommands 호출 진입에서 원시 진행/틱/명령 카운터, levelTime, P1 X/Y, Y 속도, 이동 속도 및 상태 플래그를 저장합니다. 동일 체크포인트 복원 후 동일 진행 카운터에 정렬하고 120개 샘플을 비교합니다. 실제 경과 시간은 호출 간격에 따라 달라질 수 있습니다.
-- PASS 조건: 모든 120개 진행/틱/명령 카운터 및 상태 플래그 일치, 시간 오차 <= 1e-6 s, 위치 오차 <= 0.001, Y 속도와 이동 속도 오차 <= 1e-5. 불일치/정렬 실패/입력 개입/샘플 구간 사망은 실패로 분류됩니다.
+- PASS 조건: 모든 120개 진행/명령 카운터 및 상태 플래그 일치, 원시 tick 카운터는 첫 정렬 샘플에서 계산한 복원별 오프셋이 120개 샘플에서 일정해야 함, 시간 오차 <= 1e-6 s, 위치 오차 <= 0.001, Y 속도와 이동 속도 오차 <= 1e-5. 불일치/정렬 실패/입력 개입/샘플 구간 사망은 실패로 분류됩니다.
 - HUD `CP | MATCH 120/120` 또는 `CP | FAIL`을 확인합니다. 모드 저장 폴더에서 `checkpoint-...-baseline.csv`, `checkpoint-...-matched.csv` 또는 `checkpoint-...-failed.csv` 및 [FWC] checkpoint 로그를 확인할 수 있습니다. baseline에는 actual 열이 비어 있습니다.
 - 상태 플래그 bit 0~9: grounded, upside-down, ship, bird, ball, dart, robot, spider, swing, going-left.
 - 제한: 첫 검증은 무입력 P1 단독 구간, CBF/TPS 변경/듀얼/StartPos 제외. Native 체크포인트의 전체 물리 상태, 트리거·RNG, 입력 큐 및 홀드 복원은 검증하지 않았으며 아직 자동 저장/임의 복원/Frame Window 분석을 제공하지 않습니다. 일반 모드 재생의 물리 타이밍 검증과 Practice 체크포인트의 검증은 별개입니다.
 - 기존 Recorder/Replay 및 새 CheckProbe 순수 C++ 단위 테스트는 로컬에서 통과했습니다. Geode SDK 컴파일 및 실제 게임 실행은 GitHub Actions 및 사용자 환경에서 검증해야 합니다.
+
+### v0.3.1 — Cumulative tick alignment
+
+- 사용자 실측 2회에서 tick 오프셋 +3214/+6428은 일정했고 다른 기록 값은 정확히 일치했습니다. 절대 tick 값 대신 상대 증가량을 검증합니다. Progress, Command, 시간, 물리 검증 기준은 변경하지 않았습니다.
+- CSV에 `tick_offset`, `reference_tick_offset`, `relative_tick_error`를 추가하고 원시 값도 유지합니다. 상대 오차가 0이 아니면 실패합니다.
+- 전체 물리 상태 일치나 다른 레벨에서의 정확성을 보장하지 않습니다.

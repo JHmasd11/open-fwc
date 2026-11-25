@@ -76,8 +76,8 @@ void saveProbe(char const* stage) {
     auto path = Mod::get()->getSaveDir() / fmt::format("checkpoint-{}-c{}-r{}-{}.csv", state.session, state.checkpointSerial, state.restoreSerial, stage);
     auto result = geode::utils::file::writeString(path, p.csv());
     if (result.isErr()) log::error("[FWC] checkpoint report write failed: {}", result.unwrapErr());
-    log::info("[FWC] checkpoint {}: baseline={} compared={} mismatches={} xy={:.9f} vy={:.9f} reason={} file={}",
-        stage, p.baseline.size(), p.samples.size(), p.mismatches, p.maxPosition, p.maxVelocity, p.reason, path.string());
+    log::info("[FWC] checkpoint {}: baseline={} compared={} mismatches={} tickOffset={} xy={:.9f} vy={:.9f} reason={} file={}",
+        stage, p.baseline.size(), p.samples.size(), p.mismatches, p.restoreTickOffset, p.maxPosition, p.maxVelocity, p.reason, path.string());
     updateHud();
 }
 void failProbe(char const* reason) {
