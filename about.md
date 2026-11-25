@@ -1,3 +1,2 @@
-# OpenFWC v0.4.0
-
-Experimental local-level single-jump timing scan, verified-input replay, input recorder and native checkpoint diagnostics. The window scan is opt-in and limited to ±8 ticks with a fixed observation horizon.
+# Open Frame Window Counter v0.4.1
+Experimental native checkpoint acceleration for local single-jump timing scans. Full reset mode remains available. Opt in using mod settings. Not a full-level verifier or a leaderboard tool.

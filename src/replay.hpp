@@ -41,13 +41,14 @@ struct Replay {
     std::size_t cursor = 0;
     std::string message;
     double maxError = 0;
+    std::int64_t tickOffset = 0;
     bool running() const { return phase == Phase::Running; }
     void begin(std::vector<Event> input) { *this = Replay{}; events = std::move(input); phase = Phase::Running; }
     Event const* next() const { return cursor < events.size() ? &events[cursor] : nullptr; }
     bool matches(Event const& a) const {
         auto e = next();
         return e && a.insideQueue && a.insideLogic && a.halfTick == e->halfTick &&
-            a.logicCall == e->logicCall && a.progress == e->progress && a.tickIndex == e->tickIndex &&
+            a.logicCall == e->logicCall && a.progress == e->progress && std::int64_t(a.tickIndex) - e->tickIndex == tickOffset &&
             a.commandIndex == e->commandIndex && std::isfinite(a.levelTime) &&
             std::abs(a.levelTime-e->levelTime) <= 1e-6;
     }
@@ -67,13 +68,16 @@ struct Replay {
     std::string csv(std::string const& reason) const {
         std::ostringstream out;
         out.imbue(std::locale::classic());
-        out << "sequence,expected_tick,actual_tick,expected_raw,actual_raw,player,button,down,expected_x,expected_y,actual_x,actual_y,error,expected_logic,actual_logic,result,held_before,held_after,input_verified\n";
+        out << "sequence,expected_tick,actual_tick,expected_raw,actual_raw,player,button,down,expected_x,expected_y,actual_x,actual_y,error,expected_logic,actual_logic,result,held_before,held_after,input_verified,expected_tick_index_raw,actual_tick_index_raw,restore_tick_offset\n";
         out << std::setprecision(17);
         for (std::size_t i=0; i<samples.size(); ++i) {
             auto const& s = samples[i]; auto const& e = s.expected; auto const& a = s.actual;
-            out << i+1 << ',' << tickCandidate(e) << ',' << tickCandidate(a) << ',' << e.progress << ',' << a.progress << ','
+            auto normalized=a;
+            auto rawTick=std::int64_t(a.tickIndex)-tickOffset;
+            normalized.tickIndex=rawTick>=0 && rawTick<=2147483647 ? static_cast<int>(rawTick) : -1;
+            out << i+1 << ',' << tickCandidate(e) << ',' << tickCandidate(normalized) << ',' << e.progress << ',' << a.progress << ','
                 << e.player << ',' << e.button << ',' << e.down << ',' << e.x << ',' << e.y << ',' << a.x << ',' << a.y << ','
-                << s.error() << ',' << e.logicCall << ',' << a.logicCall << ',' << csvQuote(reason) << ',' << s.heldBefore << ',' << s.heldAfter << ',' << s.verified << '\n';
+                << s.error() << ',' << e.logicCall << ',' << a.logicCall << ',' << csvQuote(reason) << ',' << s.heldBefore << ',' << s.heldAfter << ',' << s.verified << ',' << e.tickIndex << ',' << a.tickIndex << ',' << tickOffset << '\n';
         }
         return out.str();
     }

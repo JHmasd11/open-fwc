@@ -17,6 +17,7 @@ jobs:
           g++ -std=c++23 -Wall -Wextra -pedantic tests/replay_test.cpp -o /tmp/fwc-replay-test && /tmp/fwc-replay-test
           g++ -std=c++23 -Wall -Wextra -pedantic tests/checkpoint_test.cpp -o /tmp/fwc-checkpoint-test && /tmp/fwc-checkpoint-test
           g++ -std=c++23 -Wall -Wextra -pedantic tests/sweep_test.cpp -o /tmp/fwc-sweep-test && /tmp/fwc-sweep-test
+          g++ -std=c++23 -Wall -Wextra -pedantic tests/fast_scan_test.cpp -o /tmp/fwc-fast-test && /tmp/fwc-fast-test
   build:
     needs: unit-test
     strategy:
@@ -45,6 +46,6 @@ jobs:
       - name: Upload universal mod
         uses: actions/upload-artifact@v7
         with:
-          name: OpenFWC-v0.4.0
+          name: OpenFWC-v0.4.1
           path: ${{ steps.combine.outputs.build-output }}
           if-no-files-found: error

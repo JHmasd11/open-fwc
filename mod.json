@@ -6,9 +6,9 @@
   },
   "id": "openfwc.frame-window-counter",
   "name": "Open Frame Window Counter",
-  "version": "v0.4.0",
+  "version": "v0.4.1",
   "developer": "OpenFWC",
-  "description": "Stage 4: experimental single-jump timing window scan.",
+  "description": "Experimental checkpoint-accelerated single-jump timing scan.",
   "settings": {
     "enabled": {
       "name": "Record inputs",
@@ -43,6 +43,12 @@
     "window-scan": {
       "name": "Single-jump window scan (test)",
       "description": "Local normal mode only. Record one jump, release, survive 0.5s, then pause and restart. Tests 17 offsets automatically. Takes precedence over replay-on-restart. Pause to stop.",
+      "type": "bool",
+      "default": false
+    },
+    "fast-window-scan": {
+      "name": "Checkpoint acceleration (test)",
+      "description": "Requires Single-jump window scan. Local classic levels only. Enters Practice Mode during scan; validates restored baseline before shifted trials. Disable to compare full restart results.",
       "type": "bool",
       "default": false
     }

@@ -6,6 +6,7 @@
 #include "replay.hpp"
 #include "checkpoint.hpp"
 #include "sweep.hpp"
+#include "fast_scan.hpp"
 #include <Geode/loader/Loader.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
 
@@ -21,6 +22,7 @@ struct Recorder {
     fwc::ReplayInputGate replayGate;
     fwc::CheckProbe probe;
     fwc::Sweep sweep;
+    fwc::FastScan fast;
     unsigned sweepSerial = 0;
     bool checkpointEnabled = false;
     std::uintptr_t checkpointToken = 0; // identity only, never dereferenced
@@ -74,6 +76,10 @@ void updateHud() {
         auto [lo,hi]=sw.window();
         text += fmt::format("\nFW | {}{} ticks | {:+} .. {:+}", (lo==-fwc::Sweep::radius || hi==fwc::Sweep::radius)?">= ":"", hi-lo+1, lo,hi);
     } else if (sw.phase==S::Aborted) text += "\nFW | STOP | " + sw.reason;
+    if (state.fast.enabled && sw.phase!=S::Idle) {
+        auto const& f=state.fast;
+        text += fmt::format("\nFAST | {} | CP {} | restores {}", f.verified?"VERIFIED":f.validating?"VERIFYING":f.checkpoint?"BASELINE":"CAPTURE",f.captureActual,f.restores);
+    }
     if (!state.notice.empty()) text += "\n" + state.notice;
     state.hud->setString(text.c_str());
 }
@@ -105,11 +111,8 @@ void beginProbe(PlayLayer* layer, CheckpointObject* cp) {
     log::info("[FWC] checkpoint C{} captured at progress={}", state.checkpointSerial, layer->m_gameState.m_currentProgress);
     updateHud();
 }
-void probeStep(GJBaseGameLayer* layer) {
-    if (!checkpointMode(layer) || !state.probe.measuring() || state.resetGate.depth || state.pausePending) return;
-    auto p = layer->m_player1;
-    if (!p || p->m_isDead || layer->m_gameState.m_isDualMode) { failProbe("dead or unsupported dual state"); return; }
-    for (auto const& [button, down] : p->m_holdingButtons) if (down) { failProbe("button held during sample"); return; }
+fwc::CheckSample checkSample(GJBaseGameLayer* layer) {
+    auto p=layer->m_player1;
     auto pos = p->getPosition();
     fwc::CheckSample sample;
     sample.progress = layer->m_gameState.m_currentProgress;
@@ -120,6 +123,14 @@ void probeStep(GJBaseGameLayer* layer) {
     sample.flags = unsigned(p->m_isOnGround) | (unsigned(p->m_isUpsideDown)<<1) | (unsigned(p->m_isShip)<<2) |
         (unsigned(p->m_isBird)<<3) | (unsigned(p->m_isBall)<<4) | (unsigned(p->m_isDart)<<5) |
         (unsigned(p->m_isRobot)<<6) | (unsigned(p->m_isSpider)<<7) | (unsigned(p->m_isSwing)<<8) | (unsigned(p->m_isGoingLeft)<<9);
+    return sample;
+}
+void probeStep(GJBaseGameLayer* layer) {
+    if (!checkpointMode(layer) || !state.probe.measuring() || state.resetGate.depth || state.pausePending) return;
+    auto p = layer->m_player1;
+    if (!p || p->m_isDead || layer->m_gameState.m_isDualMode) { failProbe("dead or unsupported dual state"); return; }
+    for (auto const& [button, down] : p->m_holdingButtons) if (down) { failProbe("button held during sample"); return; }
+    auto sample = checkSample(layer);
     auto& probe = state.probe;
     auto previous = probe.phase;
     probe.sample(sample);
@@ -128,9 +139,17 @@ void probeStep(GJBaseGameLayer* layer) {
         saveProbe(probe.phase == P::Ready ? "baseline" : probe.phase == P::Passed ? "matched" : "failed");
     } else if ((probe.phase == fwc::CheckProbe::Phase::Baseline ? probe.baseline.size() : probe.samples.size()) % 15 == 0) updateHud();
 }
+bool fastBusy() { return state.fast.enabled && state.sweep.busy(); }
 void saveSweep() {
     auto path=Mod::get()->getSaveDir() / fmt::format("window-{}-s{}.csv",state.session,state.sweepSerial);
     auto result=geode::utils::file::writeString(path,state.sweep.csv());
+    if (state.fast.enabled) {
+        auto fpath=Mod::get()->getSaveDir() / fmt::format("fast-{}-s{}.csv",state.session,state.sweepSerial);
+        auto const& f=state.fast;
+        auto report=fmt::format("checkpoint_logic,restores,baseline_samples,verified,simulated_calls,reason\n{},{},{},{},{},{}\n",f.captureActual,f.restores,f.baseline.size(),f.verified,f.totalCalls,fwc::csvQuote(state.sweep.reason));
+        auto fr=geode::utils::file::writeString(fpath,report);
+        if(fr.isErr()) log::error("[FWC] fast report write failed: {}",fr.unwrapErr());
+    }
     if(result.isErr()) log::error("[FWC] window CSV write failed: {}",result.unwrapErr());
     log::info("[FWC] window trials={} reason={} file={}",state.sweep.trials.size(),state.sweep.reason,path.string());
     updateHud();
@@ -195,17 +214,36 @@ void startAttempt() {
     updateHud();
 }
 void armSweep() {
-    if (!state.sweep.running() || !state.replayEligible || !state.active) {
+    if (!state.sweep.running() || (!state.replayEligible && !(fastBusy() && state.owner && state.owner->m_isPracticeMode)) || !state.active) {
         abortSweep("invalid restart state"); return;
     }
     state.active=false;
     state.replay.begin(state.sweep.shifted());
+    if (fastBusy() && state.fast.checkpoint && !state.fast.loaded) {
+        stopReplay(state.owner,false,"expected native checkpoint restore missing",false); return;
+    }
     updateHud();
 }
 void finishTrial(GJBaseGameLayer* layer, bool alive) {
     if(state.owner!=layer || !state.sweep.running() || !state.replay.running()) return;
     auto session=state.session, attempt=state.attemptId;
-    state.sweep.result(alive,state.logicCall,state.replay.cursor,state.replay.maxError);
+    auto& f=state.fast;
+    if (fastBusy() && !f.verified && !f.validating) {
+        if (!alive || !f.checkpoint || state.replay.cursor!=2 || state.replay.maxError>0.1 || f.baseline.empty()) {
+            stopReplay(layer,false,"fast baseline failed",false); return;
+        }
+        // Repeat offset zero from checkpoint before accepting any result.
+        f.validating=true;
+        state.sweep.phase=fwc::Sweep::Phase::AwaitReset;
+    } else {
+        if (fastBusy() && f.validating && !f.verified) {
+            if (!alive || !f.aligned || f.comparisons!=f.baseline.size() || state.replay.cursor!=2 || state.replay.maxError>0.1) {
+                stopReplay(layer,false,"checkpoint baseline mismatch",false); return;
+            }
+            f.verified=true; f.validating=false;
+        }
+        state.sweep.result(alive,state.logicCall,state.replay.cursor,state.replay.maxError);
+    }
     stopReplay(layer,alive,alive?"horizon reached":"player died",false);
     saveSweep();
     // Native death retry owns the death animation and scheduled respawn.
@@ -214,7 +252,8 @@ void finishTrial(GJBaseGameLayer* layer, bool alive) {
         if(state.session!=session || state.attemptId!=attempt || !state.owner || !state.sweep.pending()) return;
         auto layer=static_cast<PlayLayer*>(state.owner);
         if(layer->m_isPaused || state.pausePending || state.resetGate.depth) { abortSweep("paused before next trial"); return; }
-        layer->resetLevelFromStart();
+        if (fastBusy()) layer->resetLevel();
+        else layer->resetLevelFromStart();
     });
 }
 void trace(char const* phase, PlayLayer* layer) {
@@ -290,6 +329,7 @@ struct ResetScope {
     ResetScope(GJBaseGameLayer* owner, char const* reason)
         : layer(owner), session(state.session), engaged(state.owner == owner) {
         if (engaged && state.resetGate.begin()) {
+            if (fastBusy() && state.sweep.pending()) state.fast.resetRestore();
             flushAttempt(reason);
             updateHud();
         }
@@ -347,6 +387,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (checkpointMode(this) && !ours) log::warn("[FWC] native checkpoint load did not match captured checkpoint C{}", state.checkpointSerial);
         if (ours && state.probe.measuring()) failProbe("reset interrupted sampling");
         PlayLayer::loadFromCheckpoint(cp);
+        if (state.owner==this && state.session==session && fastBusy() && state.sweep.pending()) {
+            if (cp && reinterpret_cast<std::uintptr_t>(cp)==state.fast.checkpoint) {
+                state.fast.loaded=true; ++state.fast.restores;
+            } else abortSweep("unexpected checkpoint loaded");
+        }
         if (ours && state.owner == this && state.session == session && checkpointMode(this)) {
             ++state.restoreSerial;
             if (state.probe.restore()) {
@@ -357,6 +402,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     }
     void removeCheckpoint(bool first) {
         PlayLayer::removeCheckpoint(first);
+        if (state.owner==this && fastBusy() && state.fast.checkpoint && reinterpret_cast<std::uintptr_t>(getLastCheckpoint())!=state.fast.checkpoint) abortSweep("analysis checkpoint removed");
         if (state.owner == this && state.checkpointToken && reinterpret_cast<std::uintptr_t>(getLastCheckpoint()) != state.checkpointToken) {
             failProbe("checkpoint removed"); state.checkpointToken = 0; state.probe = fwc::CheckProbe{}; updateHud();
         }
@@ -366,6 +412,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         PlayLayer::resetLevel();
     }
     void resetLevelFromStart() {
+        if (state.owner==this && fastBusy() && state.fast.checkpoint) abortSweep("unexpected full restart");
         if (state.owner == this && state.checkpointToken) { failProbe("restart from start"); state.checkpointToken = 0; state.probe = fwc::CheckProbe{}; }
         ResetScope guard(this, "restart-from-start");
         PlayLayer::resetLevelFromStart();
@@ -421,7 +468,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         fwc::Sweep newSweep;
         std::string scanError;
         if(scanRequested) {
-            if(!state.replayEligible || m_isPracticeMode || m_startPosObject || m_gameState.m_isDualMode) scanError="Use local single-player level from start";
+            if(!state.replayEligible || m_isPracticeMode || m_startPosObject || m_gameState.m_isDualMode || m_isPlatformer) scanError="Use local single-player level from start";
             else scanError=newSweep.begin(state.attempt,state.logicCall);
         }
         bool requested = !scanRequested && state.owner == this && state.active && !checkpointMode(this) &&
@@ -438,9 +485,26 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (state.owner == this && state.session == session) {
             state.pausePending = m_isPaused;
             if(scanRequested) {
+                state.fast=fwc::FastScan{};
+                // Switch only after the recording and normal restart are complete.
+                bool fastRequested=scanError.empty() && Mod::get()->getSettingValue<bool>("fast-window-scan");
+                if(fastRequested && newSweep.original.front().logicCall<=fwc::Sweep::radius+25) scanError="Jump later for checkpoint scan";
+                if(fastRequested && scanError.empty()) {
+                    ResetScope guard(this,"fast-practice-start");
+                    togglePracticeMode(true);
+                    PlayLayer::resetLevelFromStart();
+                    if(state.owner!=this || state.session!=session) return;
+                    if(!m_isPracticeMode || getLastCheckpoint()) scanError="Could not enter clean practice mode";
+                }
                 state.sweep=std::move(newSweep);
-                if(scanError.empty()) { ++state.sweepSerial; armSweep(); }
-                else { state.notice=scanError; log::warn("[FWC] scan rejected: {}",scanError); }
+                if(scanError.empty()) {
+                    if(fastRequested) {
+                        state.fast.enabled=true;
+                        state.fast.captureCall=state.sweep.original.front().logicCall-fwc::Sweep::radius-24;
+                    }
+                    ++state.sweepSerial; armSweep();
+                }
+                else { state.sweep.abort(scanError); state.notice=scanError; log::warn("[FWC] scan rejected: {}",scanError); }
             } else if (requested && !macro.empty() && state.active && state.replayEligible) {
                 state.active = false;
                 state.replay.begin(std::move(macro));
@@ -484,12 +548,13 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
         // A missed restart can be detected by the engine progress counter rewinding.
         // This fallback is diagnostic; practice/checkpoint restores are not validated.
         if (state.owner == this && (state.active || state.replay.running()) && !state.resetGate.depth) {
-            if (m_isPracticeMode || m_startPosObject) {
+            if ((m_isPracticeMode && !fastBusy()) || m_startPosObject) {
                 state.replayEligible = false;
                 if (state.replay.running()) stopReplay(this, false, "unsupported mode", true);
             }
             auto progress = m_gameState.m_currentProgress;
             if (state.haveProgress && progress < state.lastProgress) {
+                if (fastBusy()) abortSweep("unexpected progress rewind");
                 log::info("[FWC] progress rewind {} -> {}", state.lastProgress, progress);
                 flushAttempt("progress-rewind");
                 startAttempt();
@@ -507,6 +572,50 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
             state.halfTick = isHalfTick;
             state.lastTick = isLastTick;
         }
+        if (ours && fastBusy() && state.replay.running() && !state.resetGate.depth) {
+            auto& f=state.fast;
+            auto play=static_cast<PlayLayer*>(this);
+            ++f.totalCalls;
+            if(isHalfTick || !m_isPracticeMode || m_isPlatformer || !m_player1 || m_player1->m_isDead || m_gameState.m_isDualMode || m_startPosObject) {
+                stopReplay(this,false,"unsupported fast scan state",true);
+            } else {
+                auto sample=checkSample(this);
+                if(!f.checkpoint && state.logicCall==f.captureCall) {
+                    bool held=false;
+                    for(auto const& [button,down]:m_player1->m_holdingButtons) if(down) held=true;
+                    if(held || play->getLastCheckpoint() || !sample.valid() || !m_player1->m_isOnGround) {
+                        stopReplay(this,false,"unsafe checkpoint capture",true);
+                    } else {
+                        f.creating=true;
+                        auto cp=play->markCheckpoint();
+                        f.creating=false;
+                        if(!cp || play->getLastCheckpoint()!=cp) stopReplay(this,false,"native checkpoint creation failed",true);
+                        else { f.checkpoint=reinterpret_cast<std::uintptr_t>(cp); f.captureActual=state.logicCall; updateHud(); }
+                    }
+                }
+                if(state.replay.running() && f.checkpoint) {
+                    if(reinterpret_cast<std::uintptr_t>(play->getLastCheckpoint())!=f.checkpoint) {
+                        stopReplay(this,false,"checkpoint replaced",true);
+                    } else if(!f.validating && !f.verified) {
+                        f.record(state.logicCall,sample);
+                    } else {
+                        if(!f.aligned) {
+                            auto call=f.align(sample);
+                            if(!call) stopReplay(this,false,"checkpoint alignment failed",true);
+                            else { state.logicCall=*call; state.replay.tickOffset=f.baseReplayTickOffset+f.tickOffset; }
+                        }
+                        // For changed input timings only the prefix through the first
+                        // changed input may be compared to the reference trajectory.
+                        if(state.replay.running() && (f.validating || (state.logicCall<=state.replay.events.front().logicCall && state.logicCall<=state.sweep.original.front().logicCall))) {
+                            if(!f.compare(state.logicCall,sample)) {
+                                log::warn("[FWC] fast mismatch call={} progress={} command={} tick={} offset={} t={:.9f} xy=({:.6f},{:.6f}) vy={:.9f}",state.logicCall,sample.progress,sample.command,sample.tick,f.tickOffset,sample.time,sample.x,sample.y,sample.vy);
+                                stopReplay(this,false,"checkpoint prefix diverged",true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (!isHalfTick) probeStep(this);
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         if (ours && state.owner == this && state.session == session && state.attemptId == attemptId) {
@@ -514,7 +623,7 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
             state.halfTick = oldHalf;
             state.lastTick = oldLast;
             if (state.sweep.running()) {
-                if (!m_player1 || m_gameState.m_isDualMode || m_isPracticeMode || m_startPosObject) {
+                if (!m_player1 || m_gameState.m_isDualMode || (m_isPracticeMode && !fastBusy()) || m_startPosObject) {
                     stopReplay(this,false,"unsupported scan state",true);
                 } else if (m_player1->m_isDead) finishTrial(this,false);
                 else if (state.logicCall >= state.sweep.horizon) {
@@ -542,6 +651,14 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
                 if (next->logicCall > state.logicCall) break;
                 auto e = *next;
                 auto a = observe(this, e.down, e.button, e.player == 1);
+                // A fresh practice-mode start can also carry a native cumulative tick offset.
+                // Calibrate only once and only at the correct full-tick input phase.
+                if(fastBusy() && !state.fast.validating && !state.fast.verified && state.replay.cursor==0 &&
+                    e.logicCall==state.logicCall && a.progress==e.progress && a.commandIndex==e.commandIndex &&
+                    a.insideQueue && a.insideLogic && a.halfTick==e.halfTick && std::abs(a.levelTime-e.levelTime)<=1e-6) {
+                    state.fast.baseReplayTickOffset=std::int64_t(a.tickIndex)-e.tickIndex;
+                    state.replay.tickOffset=state.fast.baseReplayTickOffset;
+                }
                 if (e.logicCall != state.logicCall || !state.replay.matches(a)) break;
                 if (a.dead || !std::isfinite(a.x) || !std::isfinite(a.y)) {
                     stopReplay(this, false, "invalid player state", true);
