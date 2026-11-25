@@ -1,4 +1,4 @@
-# Open Frame Window Counter (v0.2.0)
+# Open Frame Window Counter (v0.2.1)
 
 GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 
@@ -6,7 +6,7 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 1. GitHub에 빈 repository를 생성합니다 (예: open-fwc).
 2. 이 ZIP을 풀고 내부 파일 전체(CMakeLists.txt, mod.json, src, tests, .github 등)를 저장소 루트에 커밋합니다. .github/workflows/build.yml 누락 주의.
 3. Actions > Build OpenFWC > Run workflow (push to main 시 자동 실행).
-4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.2.0 ZIP을 받습니다.
+4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.2.1 ZIP을 받습니다.
 5. ZIP 안의 .geode를 Geode의 mods 폴더에 복사하고 게임을 재시작합니다. SDK 및 로더 버전 6.0.0을 사용하세요.
 
 ## 테스트 절차
@@ -55,3 +55,11 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - `replay-...-done.csv` / `replay-...-stopped.csv`는 기존 save directory에 저장됩니다. 각 입력 직전 좌표의 오차 및 틱을 비교합니다. `inputs matched`는 전체 입력 주입 및 관측 좌표 오차 0.1 GD 좌표 단위 이하를 의미하며, 전체 레벨의 동일한 결과/클리어를 보장하지 않습니다. `position diverged`는 입력은 모두 주입했으나 좌표가 다름을 의미합니다.
 - 실패하면 원본 fwc CSV, replay CSV (0개 주입이면 헤더만 있을 수 있음), [FWC] 로그를 보내세요. 자동 리플레이는 로컬 레벨만 지원하며 검증/기록 제출용이 아닙니다. 기존 CSV import, 완료 시도 재생, 재생 저장/불러오기, 체크포인트, Frame Window 계산은 미구현입니다.
 - Geode SDK 전체 빌드 및 런타임 재현은 미검증이며, 순수 C++ 테스트만 실행했습니다.
+
+## v0.2.1 — Replay input dispatch fix
+- v0.2.0 사용자 실기기: 8/8 처리, 최대 위치 오차 61.7652, 점프 없음. 재생 중 입력 차단 hook이 모드 자체 주입도 차단할 가능성을 확인했습니다.
+- 명시적으로 주입 중인 입력만 handleButton의 원래 게임 함수로 전달합니다. 일반 사용자 입력 차단은 유지합니다.
+- 실제 PlayerObject의 m_holdingButtons를 호출 전후 비교합니다. 예상 상태 전환이 확인된 경우에만 재생 카운터 증가. 실패하면 REPLAY STOP / input not applied로 종료하며 실패 행도 CSV에 저장합니다.
+- CSV에 held_before, held_after, input_verified 열을 추가합니다. 원래 입력 직전 위치 샘플은 유지합니다. 좌표 오차가 0.1을 초과하면 position diverged로 실패 처리합니다.
+- 테스트는 로컬 일반 큐브 레벨에서 진행합니다. 각 점프 사이에 착지할 시간, 마지막 입력 해제 후 ESC Restart. 실패할 경우 원본 fwc CSV, replay CSV, [FWC] dispatch 로그를 공유하세요.
+- 버튼 상태 전환 확인은 점프/전체 물리 상태 일치를 보장하지 않습니다. Geode SDK 빌드 및 실제 게임 테스트는 아직 미검증입니다.

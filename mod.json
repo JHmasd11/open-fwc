@@ -6,7 +6,7 @@
   },
   "id": "openfwc.frame-window-counter",
   "name": "Open Frame Window Counter",
-  "version": "v0.2.0",
+  "version": "v0.2.1",
   "developer": "OpenFWC",
   "description": "Stage 2: input recorder and experimental local-level replay diagnostics.",
   "settings": {

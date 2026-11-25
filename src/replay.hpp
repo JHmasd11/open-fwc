@@ -21,8 +21,15 @@ inline std::string replayRejection(Attempt const& attempt) {
     }
     return held.empty() ? std::string{} : "unbalanced input";
 }
+// Native input is suppressed during replay, but our dispatch must enter the
+// hooked handleButton and continue to the original engine function.
+struct ReplayInputGate {
+    bool injecting = false;
+    bool blocks(bool replayRunning) const { return replayRunning && !injecting; }
+};
 struct ReplaySample {
     Event expected, actual;
+    bool heldBefore{}, heldAfter{}, verified{};
     double error() const { return std::hypot(double(actual.x) - expected.x, double(actual.y) - expected.y); }
 };
 struct Replay {
@@ -44,23 +51,29 @@ struct Replay {
             a.commandIndex == e->commandIndex && std::isfinite(a.levelTime) &&
             std::abs(a.levelTime-e->levelTime) <= 1e-6;
     }
-    void applied(Event const& a) {
-        auto const& e = events[cursor++];
-        samples.push_back({e, a});
+    // Count only an observed transition in the real PlayerObject's held map.
+    bool confirm(Event const& a, bool before, bool after) {
+        auto e = next();
+        if (!e || !matches(a)) return false;
+        bool verified = before != e->down && after == e->down;
+        samples.push_back({*e, a, before, after, verified});
         maxError = std::max(maxError, samples.back().error());
-        auto key = std::pair{e.player, e.button};
-        if (e.down) held.insert(key); else held.erase(key);
+        if (!verified) return false;
+        ++cursor;
+        auto key = std::pair{e->player, e->button};
+        if (e->down) held.insert(key); else held.erase(key);
+        return true;
     }
     std::string csv(std::string const& reason) const {
         std::ostringstream out;
         out.imbue(std::locale::classic());
-        out << "sequence,expected_tick,actual_tick,expected_raw,actual_raw,player,button,down,expected_x,expected_y,actual_x,actual_y,error,expected_logic,actual_logic,result\n";
+        out << "sequence,expected_tick,actual_tick,expected_raw,actual_raw,player,button,down,expected_x,expected_y,actual_x,actual_y,error,expected_logic,actual_logic,result,held_before,held_after,input_verified\n";
         out << std::setprecision(17);
         for (std::size_t i=0; i<samples.size(); ++i) {
             auto const& s = samples[i]; auto const& e = s.expected; auto const& a = s.actual;
             out << i+1 << ',' << tickCandidate(e) << ',' << tickCandidate(a) << ',' << e.progress << ',' << a.progress << ','
                 << e.player << ',' << e.button << ',' << e.down << ',' << e.x << ',' << e.y << ',' << a.x << ',' << a.y << ','
-                << s.error() << ',' << e.logicCall << ',' << a.logicCall << ',' << csvQuote(reason) << '\n';
+                << s.error() << ',' << e.logicCall << ',' << a.logicCall << ',' << csvQuote(reason) << ',' << s.heldBefore << ',' << s.heldAfter << ',' << s.verified << '\n';
         }
         return out.str();
     }

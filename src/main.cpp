@@ -14,6 +14,7 @@ struct Recorder {
     CCLabelBMFont* hud = nullptr; // owned by PlayLayer
     fwc::Attempt attempt;
     fwc::Replay replay;
+    fwc::ReplayInputGate replayGate;
     bool localLevel = false, replayEligible = false, insideQueue = false;
     std::string notice;
     std::uint64_t session = 0, attemptId = 0, logicCall = 0;
@@ -88,6 +89,7 @@ void flushAttempt(char const* reason) {
 void startAttempt() {
     state.attempt.clear();
     state.replay = fwc::Replay{};
+    state.replayGate = fwc::ReplayInputGate{};
     state.notice.clear();
     state.insideQueue = false;
     state.replayEligible = state.localLevel && state.owner && !state.owner->m_isPracticeMode && !state.owner->m_startPosObject;
@@ -129,6 +131,12 @@ fwc::Event observe(GJBaseGameLayer* layer, bool down, int button, bool isPlayer1
     e.dead = !player || player->m_isDead;
     e.source = source;
     return e;
+}
+std::optional<bool> heldButton(GJBaseGameLayer* layer, int playerIndex, int button) {
+    auto player = playerIndex == 1 ? layer->m_player1 : layer->m_player2;
+    if (!player) return std::nullopt;
+    auto it = player->m_holdingButtons.find(button);
+    return it != player->m_holdingButtons.end() && it->second;
 }
 void capture(GJBaseGameLayer* layer, bool down, int button, bool isPlayer1,
              fwc::Event::Source source = fwc::Event::Source::Input) {
@@ -358,14 +366,34 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
                     stopReplay(this, false, "invalid player state", true);
                     break;
                 }
-                state.replay.applied(a);
-                log::info("[FWC] replay #{}/{} tick={} position error={:.6f}", state.replay.cursor,
-                    state.replay.events.size(), fwc::tickCandidate(a), state.replay.samples.back().error());
-                // Apply at the observed command-queue phase, not at a render frame.
+                auto before = heldButton(this, e.player, e.button);
+                if (!before) {
+                    stopReplay(this, false, "missing input target", true);
+                    break;
+                }
+                // A call from processQueuedButtons enters our separate handleButton
+                // hook. Permit this one synchronous dispatch instead of swallowing it.
+                state.replayGate.injecting = true;
                 GJBaseGameLayer::handleButton(e.down, e.button, e.player == 1);
-                if (state.owner != this || state.session != session || state.attemptId != attempt || !state.replay.running()) break;
+                if (state.owner != this || state.session != session || state.attemptId != attempt) break;
+                state.replayGate.injecting = false;
+                if (!state.replay.running()) break;
+                auto after = heldButton(this, e.player, e.button);
+                if (!after) {
+                    stopReplay(this, false, "input target lost", true);
+                    break;
+                }
+                bool verified = state.replay.confirm(a, *before, *after);
+                log::info("[FWC] dispatch P{} b{} {} tick={} held {} -> {} verified={} cursor={}/{} error={:.6f}",
+                    e.player, e.button, e.down ? "DOWN" : "UP", fwc::tickCandidate(a), *before, *after,
+                    verified, state.replay.cursor, state.replay.events.size(), state.replay.maxError);
+                if (!verified) {
+                    stopReplay(this, false, "input not applied", true);
+                    break;
+                }
                 if (!state.replay.next()) {
-                    stopReplay(this, true, state.replay.maxError <= 0.1 ? "inputs matched" : "position diverged", false);
+                    bool matched = state.replay.maxError <= 0.1;
+                    stopReplay(this, matched, matched ? "inputs matched" : "position diverged", false);
                     break;
                 }
                 updateHud();
@@ -376,7 +404,11 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
     }
     void handleButton(bool down, int button, bool isPlayer1) {
         // Physical inputs cannot mix with a running diagnostic replay.
-        if (state.owner == this && state.replay.running()) return;
+        if (state.owner == this && state.replay.running()) {
+            if (state.replayGate.blocks(true)) return;
+            GJBaseGameLayer::handleButton(down, button, isPlayer1);
+            return;
+        }
         if (state.owner == this && state.active) {
             // Ignore UI presses during pause, but record a real release of an already-held key.
             if (state.pausePending) {
