@@ -25,6 +25,8 @@ struct Event {
     bool down{};
     float x{}, y{};
     bool dead{};
+    enum class Source { Input, PauseHook, PauseSync };
+    Source source = Source::Input;
 };
 inline std::string csvQuote(std::string const& value) {
     std::string out = "\"";
@@ -32,8 +34,15 @@ inline std::string csvQuote(std::string const& value) {
     return out + '"';
 }
 // Only emit observed 240 TPS candidates that match all raw counters and time.
+inline char const* sourceName(Event::Source source) {
+    switch (source) {
+        case Event::Source::PauseHook: return "pause-hook";
+        case Event::Source::PauseSync: return "pause-sync";
+        default: return "input";
+    }
+}
 inline std::int64_t tickCandidate(Event const& e) {
-    if (e.logicCall == 0 || !e.insideLogic || e.halfTick || e.tickIndex < 0 ||
+    if (e.source != Event::Source::Input || e.logicCall == 0 || !e.insideLogic || e.halfTick || e.tickIndex < 0 ||
         e.progress != static_cast<unsigned>(e.tickIndex) || e.progress != e.commandIndex ||
         e.progress % 2 != 0 || e.progress / 2 != e.logicCall ||
         !std::isfinite(e.levelTime) || std::abs(e.levelTime - (e.logicCall - 1) / 240.0) > 1e-6) return -1;
@@ -60,13 +69,13 @@ struct Attempt {
     std::string csv(std::string const& levelName = {}, int levelId = 0, std::string const& reason = {}) const {
         std::ostringstream out;
         out.imbue(std::locale::classic());
-        out << "sequence,progress_raw,tick_index_raw,command_index_raw,logic_call,inside_logic,half_tick,last_tick,level_time_s,total_time_s,player,button,down,x,y,dead,tick_240_candidate,level_id,level_name,end_reason\n";
+        out << "sequence,progress_raw,tick_index_raw,command_index_raw,logic_call,inside_logic,half_tick,last_tick,level_time_s,total_time_s,player,button,down,x,y,dead,tick_240_candidate,level_id,level_name,end_reason,event_source\n";
         out << std::setprecision(17);
         for (std::size_t i = 0; i < events.size(); ++i) {
             auto const& e = events[i];
             out << i + 1 << ',' << e.progress << ',' << e.tickIndex << ',' << e.commandIndex << ',' << e.logicCall << ','
                 << e.insideLogic << ',' << e.halfTick << ',' << e.lastTick << ',' << e.levelTime << ',' << e.totalTime << ','
-                << e.player << ',' << e.button << ',' << e.down << ',' << e.x << ',' << e.y << ',' << e.dead << ',' << tickCandidate(e) << ',' << levelId << ',' << csvQuote(levelName) << ',' << csvQuote(reason) << '\n';
+                << e.player << ',' << e.button << ',' << e.down << ',' << e.x << ',' << e.y << ',' << e.dead << ',' << tickCandidate(e) << ',' << levelId << ',' << csvQuote(levelName) << ',' << csvQuote(reason) << ',' << sourceName(e.source) << '\n';
         }
         return out.str();
     }

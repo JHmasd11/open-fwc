@@ -1,4 +1,4 @@
-# Open Frame Window Counter (v0.1.1)
+# Open Frame Window Counter (v0.1.2)
 
 GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 
@@ -6,7 +6,7 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 1. GitHub에 빈 repository를 생성합니다 (예: open-fwc).
 2. 이 ZIP을 풀고 내부 파일 전체(CMakeLists.txt, mod.json, src, tests, .github 등)를 저장소 루트에 커밋합니다. .github/workflows/build.yml 누락 주의.
 3. Actions > Build OpenFWC > Run workflow (push to main 시 자동 실행).
-4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.1.1 ZIP을 받습니다.
+4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.1.2 ZIP을 받습니다.
 5. ZIP 안의 .geode를 Geode의 mods 폴더에 복사하고 게임을 재시작합니다. SDK 및 로더 버전 6.0.0을 사용하세요.
 
 ## 테스트 절차
@@ -37,3 +37,11 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - CSV에 tick_240_candidate(-1=불확실), level_id, level_name, end_reason을 추가합니다. 후보 값은 수집된 일반 모드 데이터에서만 검증된 관계를 적용합니다.
 - Windows runner는 windows-2022로 고정합니다.
 - 파일 저장 위치는 기존과 동일합니다. 입력 없는 시도는 CSV가 생성되지 않습니다.
+
+## v0.1.2 변경 사항
+- pauseGame, resume, resumeAndRestart, onQuit의 명시적 hook과 lifecycle 로그 추가. 일시정지 중 onExit는 기록을 제거하지 않습니다.
+- 재시작 중첩 보호를 resumeAndRestart까지 확장했습니다. 지연 재시작의 실제 호출 순서는 검증 필요.
+- 재개 시 실제 m_holdingButtons와 비교하여 누락된 release를 pause-sync로 기록합니다. pause-hook/pause-sync는 tick 후보 -1로 표시합니다. 이 이벤트의 정확한 물리 적용 시점은 확인되지 않았으므로 향후 매크로 재생에서 별도 처리해야 합니다.
+- CSV에 event_source 열 추가. 기존 열은 유지합니다.
+- 사용자가 v0.1.1 빌드 성공 및 초기 UP 수정 확인, ESC Restart/Resume 실패를 보고했습니다. v0.1.2의 Geode 빌드와 실기기 동작은 아직 미검증입니다.
+- 테스트: 점프 2회 후 ESC → Resume → 점프 2회, ESC → Restart → 점프 2회, 점프 홀드 중 ESC → Resume → 추가 점프. 실패 시 [FWC] lifecycle, filtered, reconcile 메시지와 CSV를 공유해 주세요.
