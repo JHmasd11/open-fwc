@@ -6,9 +6,9 @@
   },
   "id": "openfwc.frame-window-counter",
   "name": "Open Frame Window Counter",
-  "version": "v0.2.1",
+  "version": "v0.3.0",
   "developer": "OpenFWC",
-  "description": "Stage 2: input recorder and experimental local-level replay diagnostics.",
+  "description": "Stage 3: input replay and experimental native practice checkpoint validation.",
   "settings": {
     "enabled": {
       "name": "Record inputs",
@@ -31,6 +31,12 @@
     "replay-on-restart": {
       "name": "Replay on pause restart (test)",
       "description": "Opt-in: replay the current valid recording when you restart from the pause menu in a local level. Disable to record only.",
+      "type": "bool",
+      "default": false
+    },
+    "checkpoint-probe": {
+      "name": "Checkpoint restore probe (test)",
+      "description": "Local classic Practice Mode only. Disable auto checkpoints, manually place one, do not press gameplay inputs until the 120-sample baseline is ready, then die and compare the native respawn. Applied on next level entry.",
       "type": "bool",
       "default": false
     }

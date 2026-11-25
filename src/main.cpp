@@ -4,6 +4,8 @@
 #include <Geode/utils/file.hpp>
 #include <chrono>
 #include "replay.hpp"
+#include "checkpoint.hpp"
+#include <Geode/binding/CheckpointObject.hpp>
 
 using namespace geode::prelude;
 
@@ -15,6 +17,10 @@ struct Recorder {
     fwc::Attempt attempt;
     fwc::Replay replay;
     fwc::ReplayInputGate replayGate;
+    fwc::CheckProbe probe;
+    bool checkpointEnabled = false;
+    std::uintptr_t checkpointToken = 0; // identity only, never dereferenced
+    unsigned checkpointSerial = 0, restoreSerial = 0;
     bool localLevel = false, replayEligible = false, insideQueue = false;
     std::string notice;
     std::uint64_t session = 0, attemptId = 0, logicCall = 0;
@@ -45,10 +51,72 @@ void updateHud() {
             state.attemptId, state.attempt.presses, state.attempt.releases,
             e.player, e.down ? "DOWN" : "UP", e.progress, e.x);
     }
+    if (state.checkpointEnabled && state.localLevel && state.owner && state.owner->m_isPracticeMode) {
+        using P = fwc::CheckProbe::Phase;
+        auto const& p = state.probe;
+        switch (p.phase) {
+            case P::Idle: text += "\nCP | Place manual checkpoint"; break;
+            case P::Baseline: text += fmt::format("\nCP | BASELINE {}/{}", p.baseline.size(), fwc::CheckProbe::target); break;
+            case P::Ready: text += "\nCP | READY | Die to restore"; break;
+            case P::Comparing: text += fmt::format("\nCP | COMPARE {}/{}", p.samples.size(), fwc::CheckProbe::target); break;
+            case P::Passed: text += fmt::format("\nCP | MATCH {}/{} | XY {:.6f} VY {:.6f}", p.samples.size(), fwc::CheckProbe::target, p.maxPosition, p.maxVelocity); break;
+            case P::Failed: text += fmt::format("\nCP | FAIL | {}", p.reason); break;
+        }
+    }
     if (!state.notice.empty()) text += "\n" + state.notice;
     state.hud->setString(text.c_str());
 }
 
+bool checkpointMode(GJBaseGameLayer* layer) {
+    return state.owner == layer && state.checkpointEnabled && state.localLevel &&
+        layer->m_isPracticeMode && !layer->m_startPosObject && !state.replay.running();
+}
+void saveProbe(char const* stage) {
+    auto const& p = state.probe;
+    auto path = Mod::get()->getSaveDir() / fmt::format("checkpoint-{}-c{}-r{}-{}.csv", state.session, state.checkpointSerial, state.restoreSerial, stage);
+    auto result = geode::utils::file::writeString(path, p.csv());
+    if (result.isErr()) log::error("[FWC] checkpoint report write failed: {}", result.unwrapErr());
+    log::info("[FWC] checkpoint {}: baseline={} compared={} mismatches={} xy={:.9f} vy={:.9f} reason={} file={}",
+        stage, p.baseline.size(), p.samples.size(), p.mismatches, p.maxPosition, p.maxVelocity, p.reason, path.string());
+    updateHud();
+}
+void failProbe(char const* reason) {
+    if (!state.probe.measuring()) return;
+    state.probe.fail(reason); saveProbe("failed");
+}
+void beginProbe(PlayLayer* layer, CheckpointObject* cp) {
+    if (!cp || !checkpointMode(layer) || state.resetGate.depth || state.pausePending || layer->m_isPaused) return;
+    auto token = reinterpret_cast<std::uintptr_t>(cp);
+    if (token == state.checkpointToken) return; // createCheckpoint + markCheckpoint may return the same object
+    if (state.probe.measuring()) failProbe("replaced by new checkpoint");
+    state.checkpointToken = token; ++state.checkpointSerial; state.restoreSerial = 0;
+    state.probe.begin();
+    log::info("[FWC] checkpoint C{} captured at progress={}", state.checkpointSerial, layer->m_gameState.m_currentProgress);
+    updateHud();
+}
+void probeStep(GJBaseGameLayer* layer) {
+    if (!checkpointMode(layer) || !state.probe.measuring() || state.resetGate.depth || state.pausePending) return;
+    auto p = layer->m_player1;
+    if (!p || p->m_isDead || layer->m_gameState.m_isDualMode) { failProbe("dead or unsupported dual state"); return; }
+    for (auto const& [button, down] : p->m_holdingButtons) if (down) { failProbe("button held during sample"); return; }
+    auto pos = p->getPosition();
+    fwc::CheckSample sample;
+    sample.progress = layer->m_gameState.m_currentProgress;
+    sample.command = layer->m_gameState.m_commandIndex;
+    sample.tick = layer->m_tickIndex;
+    sample.time = layer->m_gameState.m_levelTime;
+    sample.x = pos.x; sample.y = pos.y; sample.vy = p->m_yVelocity; sample.speed = p->m_playerSpeed;
+    sample.flags = unsigned(p->m_isOnGround) | (unsigned(p->m_isUpsideDown)<<1) | (unsigned(p->m_isShip)<<2) |
+        (unsigned(p->m_isBird)<<3) | (unsigned(p->m_isBall)<<4) | (unsigned(p->m_isDart)<<5) |
+        (unsigned(p->m_isRobot)<<6) | (unsigned(p->m_isSpider)<<7) | (unsigned(p->m_isSwing)<<8) | (unsigned(p->m_isGoingLeft)<<9);
+    auto& probe = state.probe;
+    auto previous = probe.phase;
+    probe.sample(sample);
+    if (previous != probe.phase) {
+        using P = fwc::CheckProbe::Phase;
+        saveProbe(probe.phase == P::Ready ? "baseline" : probe.phase == P::Passed ? "matched" : "failed");
+    } else if ((probe.phase == fwc::CheckProbe::Phase::Baseline ? probe.baseline.size() : probe.samples.size()) % 15 == 0) updateHud();
+}
 void stopReplay(GJBaseGameLayer* layer, bool finished, char const* reason, bool release) {
     auto& r = state.replay;
     if (!r.running()) return;
@@ -194,6 +262,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (state.owner) flushAttempt("replaced");
         state = Recorder{};
         state.owner = this;
+        state.checkpointEnabled = Mod::get()->getSettingValue<bool>("checkpoint-probe");
         if (level) { state.levelName = level->m_levelName; state.levelId = level->m_levelID.value(); state.localLevel = level->m_levelType == GJLevelType::Editor; }
         auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
@@ -214,16 +283,47 @@ class $modify(FWCPlayLayer, PlayLayer) {
         startAttempt();
         return true;
     }
+    CheckpointObject* createCheckpoint() {
+        auto cp = PlayLayer::createCheckpoint();
+        beginProbe(this, cp);
+        return cp;
+    }
+    CheckpointObject* markCheckpoint() {
+        auto cp = PlayLayer::markCheckpoint();
+        beginProbe(this, cp);
+        return cp;
+    }
+    void loadFromCheckpoint(CheckpointObject* cp) {
+        auto session = state.session;
+        bool ours = checkpointMode(this) && cp && reinterpret_cast<std::uintptr_t>(cp) == state.checkpointToken;
+        if (checkpointMode(this) && !ours) log::warn("[FWC] native checkpoint load did not match captured checkpoint C{}", state.checkpointSerial);
+        if (ours && state.probe.measuring()) failProbe("reset interrupted sampling");
+        PlayLayer::loadFromCheckpoint(cp);
+        if (ours && state.owner == this && state.session == session && checkpointMode(this)) {
+            ++state.restoreSerial;
+            if (state.probe.restore()) {
+                log::info("[FWC] checkpoint C{} restored R{} progress={}", state.checkpointSerial, state.restoreSerial, m_gameState.m_currentProgress);
+                updateHud();
+            } else saveProbe("failed");
+        }
+    }
+    void removeCheckpoint(bool first) {
+        PlayLayer::removeCheckpoint(first);
+        if (state.owner == this && state.checkpointToken && reinterpret_cast<std::uintptr_t>(getLastCheckpoint()) != state.checkpointToken) {
+            failProbe("checkpoint removed"); state.checkpointToken = 0; state.probe = fwc::CheckProbe{}; updateHud();
+        }
+    }
     void resetLevel() {
         ResetScope guard(this, "reset");
         PlayLayer::resetLevel();
     }
     void resetLevelFromStart() {
+        if (state.owner == this && state.checkpointToken) { failProbe("restart from start"); state.checkpointToken = 0; state.probe = fwc::CheckProbe{}; }
         ResetScope guard(this, "restart-from-start");
         PlayLayer::resetLevelFromStart();
     }
     void levelComplete() {
-        if (state.owner == this) { flushAttempt("complete"); updateHud(); }
+        if (state.owner == this) { failProbe("level complete before sample end"); flushAttempt("complete"); updateHud(); }
         PlayLayer::levelComplete();
     }
     void pauseGame(bool unfocused) {
@@ -261,7 +361,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto session = state.session;
         std::vector<fwc::Event> macro;
         std::string rejection;
-        bool requested = state.owner == this && state.active &&
+        bool requested = state.owner == this && state.active && !checkpointMode(this) &&
             Mod::get()->getSettingValue<bool>("replay-on-restart");
         if (requested) {
             if (!state.replayEligible || m_isPracticeMode || m_startPosObject) rejection = "Use a local level from start";
@@ -290,6 +390,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     void onQuit() {
         if (state.owner == this) {
             trace("quit", this);
+            failProbe("quit before sample end");
             flushAttempt("exit");
             state = Recorder{};
         }
@@ -300,6 +401,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             trace("onExit", this);
             // A temporary scene transition during pause is not an actual level quit.
             if (!state.pausePending && !m_isPaused && !state.resetGate.depth) {
+                failProbe("exit before sample end");
                 flushAttempt("exit");
                 state = Recorder{};
             }
@@ -336,6 +438,7 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
             state.halfTick = isHalfTick;
             state.lastTick = isLastTick;
         }
+        if (!isHalfTick) probeStep(this);
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         if (ours && state.owner == this && state.session == session && state.attemptId == attemptId) {
             state.insideLogic = oldInside;
@@ -403,6 +506,7 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
         if (ours && state.owner == this && state.session == session && state.attemptId == attempt) state.insideQueue = oldQueue;
     }
     void handleButton(bool down, int button, bool isPlayer1) {
+        if (down && checkpointMode(this) && !state.pausePending && !state.resetGate.depth) failProbe("input during sample");
         // Physical inputs cannot mix with a running diagnostic replay.
         if (state.owner == this && state.replay.running()) {
             if (state.replayGate.blocks(true)) return;
