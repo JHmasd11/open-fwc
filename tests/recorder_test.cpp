@@ -18,7 +18,7 @@ int main() {
     e.player = 1; assert(a.push(e));
     assert(a.presses == 3 && a.releases == 3 && a.events.size() == 6);
     auto csv = a.csv("test, \"quoted\"", 42, "reset");
-    assert(csv.find("32,42,\"test, \"\"quoted\"\"\",\"reset\",input\n") != std::string::npos);
+    assert(csv.find("32,42,\"test, \"\"quoted\"\"\",\"reset\",input,0\n") != std::string::npos);
     assert(std::count(csv.begin(), csv.end(), '\n') == 7);
     e.halfTick = true; assert(fwc::tickCandidate(e) == -1);
     e.halfTick = false; e.levelTime = 1; assert(fwc::tickCandidate(e) == -1);
@@ -30,7 +30,7 @@ int main() {
     e.logicCall = 33; e.insideLogic = true; e.levelTime = 32.0 / 240;
     assert(fwc::tickCandidate(e) == -1);
     assert(a.push(e)); assert(!a.push(e));
-    assert(a.csv().find(",pause-sync\n") != std::string::npos);
+    assert(a.csv().find(",pause-sync,0\n") != std::string::npos);
     e.down = true; e.source = fwc::Event::Source::Input;
     assert(a.push(e)); assert(fwc::tickCandidate(e) == 32);
     fwc::ResetGate gate; assert(gate.begin()); assert(!gate.begin()); assert(!gate.end()); assert(gate.end()); assert(!gate.end());

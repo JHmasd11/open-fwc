@@ -1,14 +1,38 @@
 {
   "geode": "6.0.0",
-  "gd": {"win": "2.2091", "android": "2.2091"},
+  "gd": {
+    "win": "2.2091",
+    "android": "2.2091"
+  },
   "id": "openfwc.frame-window-counter",
   "name": "Open Frame Window Counter",
-  "version": "v0.1.2",
+  "version": "v0.2.0",
   "developer": "OpenFWC",
-  "description": "Stage 1: input recorder and timing diagnostics. No automated window analysis yet.",
+  "description": "Stage 2: input recorder and experimental local-level replay diagnostics.",
   "settings": {
-    "enabled": {"name": "Record inputs", "description": "Record gameplay input events. Applied on the next attempt.", "type": "bool", "default": true},
-    "show-hud": {"name": "Show recorder HUD", "description": "Display input count and last observed progress counter. Applied on next level entry.", "type": "bool", "default": true},
-    "verbose-log": {"name": "Log every input", "description": "Print every captured event in the Geode log. Applied on the next attempt.", "type": "bool", "default": true}
+    "enabled": {
+      "name": "Record inputs",
+      "description": "Record gameplay input events. Applied on the next attempt.",
+      "type": "bool",
+      "default": true
+    },
+    "show-hud": {
+      "name": "Show recorder HUD",
+      "description": "Display input count and last observed progress counter. Applied on next level entry.",
+      "type": "bool",
+      "default": true
+    },
+    "verbose-log": {
+      "name": "Log every input",
+      "description": "Print every captured event in the Geode log. Applied on the next attempt.",
+      "type": "bool",
+      "default": true
+    },
+    "replay-on-restart": {
+      "name": "Replay on pause restart (test)",
+      "description": "Opt-in: replay the current valid recording when you restart from the pause menu in a local level. Disable to record only.",
+      "type": "bool",
+      "default": false
+    }
   }
 }

@@ -16,6 +16,7 @@ struct Event {
     unsigned commandIndex{};
     std::uint64_t logicCall{};
     bool insideLogic{};
+    bool insideQueue{};
     bool halfTick{};
     bool lastTick{};
     double levelTime{};
@@ -69,13 +70,13 @@ struct Attempt {
     std::string csv(std::string const& levelName = {}, int levelId = 0, std::string const& reason = {}) const {
         std::ostringstream out;
         out.imbue(std::locale::classic());
-        out << "sequence,progress_raw,tick_index_raw,command_index_raw,logic_call,inside_logic,half_tick,last_tick,level_time_s,total_time_s,player,button,down,x,y,dead,tick_240_candidate,level_id,level_name,end_reason,event_source\n";
+        out << "sequence,progress_raw,tick_index_raw,command_index_raw,logic_call,inside_logic,half_tick,last_tick,level_time_s,total_time_s,player,button,down,x,y,dead,tick_240_candidate,level_id,level_name,end_reason,event_source,inside_queue\n";
         out << std::setprecision(17);
         for (std::size_t i = 0; i < events.size(); ++i) {
             auto const& e = events[i];
             out << i + 1 << ',' << e.progress << ',' << e.tickIndex << ',' << e.commandIndex << ',' << e.logicCall << ','
                 << e.insideLogic << ',' << e.halfTick << ',' << e.lastTick << ',' << e.levelTime << ',' << e.totalTime << ','
-                << e.player << ',' << e.button << ',' << e.down << ',' << e.x << ',' << e.y << ',' << e.dead << ',' << tickCandidate(e) << ',' << levelId << ',' << csvQuote(levelName) << ',' << csvQuote(reason) << ',' << sourceName(e.source) << '\n';
+                << e.player << ',' << e.button << ',' << e.down << ',' << e.x << ',' << e.y << ',' << e.dead << ',' << tickCandidate(e) << ',' << levelId << ',' << csvQuote(levelName) << ',' << csvQuote(reason) << ',' << sourceName(e.source) << ',' << e.insideQueue << '\n';
         }
         return out.str();
     }

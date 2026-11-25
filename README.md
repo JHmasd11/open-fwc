@@ -1,4 +1,4 @@
-# Open Frame Window Counter (v0.1.2)
+# Open Frame Window Counter (v0.2.0)
 
 GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 
@@ -6,7 +6,7 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 1. GitHub에 빈 repository를 생성합니다 (예: open-fwc).
 2. 이 ZIP을 풀고 내부 파일 전체(CMakeLists.txt, mod.json, src, tests, .github 등)를 저장소 루트에 커밋합니다. .github/workflows/build.yml 누락 주의.
 3. Actions > Build OpenFWC > Run workflow (push to main 시 자동 실행).
-4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.1.2 ZIP을 받습니다.
+4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.2.0 ZIP을 받습니다.
 5. ZIP 안의 .geode를 Geode의 mods 폴더에 복사하고 게임을 재시작합니다. SDK 및 로더 버전 6.0.0을 사용하세요.
 
 ## 테스트 절차
@@ -23,7 +23,7 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - button은 게임 내부 번호이며 P1/P2는 handleButton 인수 기준입니다. 듀얼 공유 입력이나 자동 입력은 실제 플레이와 비교 검증해야 합니다.
 - CSV는 재시작, 완료, 레벨 종료 시 시도별로 저장합니다. 입력 없는 시도는 파일이 생성되지 않습니다. 비정상 종료 시 현재 시도는 잃을 수 있고, 파일 저장 실패는 로그에 표시됩니다.
 - HUD와 기록은 일반 PlayLayer 대상으로 개발했습니다. 에디터 내 플레이테스트는 지원 대상이 아닙니다. 연습 모드의 체크포인트 복원 타이밍은 아직 검증하지 않았습니다.
-- 입력은 변경하지 않습니다. 입력 리플레이, 프레임 윈도우 측정, CBF 지원은 이후 단계입니다.
+- 일반 기록 모드에서는 입력을 변경하지 않습니다. 실험용 리플레이는 명시적으로 설정에서 활성화합니다. 프레임 윈도우 측정 및 CBF 지원은 이후 단계입니다.
 - v0.1.0은 사용자 환경에서 컴파일과 CSV 기록을 확인했습니다. v0.1.1의 SDK 컴파일 및 실제 실행은 아직 검증하지 않았습니다.
 
 ## 개발 참고
@@ -45,3 +45,13 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - CSV에 event_source 열 추가. 기존 열은 유지합니다.
 - 사용자가 v0.1.1 빌드 성공 및 초기 UP 수정 확인, ESC Restart/Resume 실패를 보고했습니다. v0.1.2의 Geode 빌드와 실기기 동작은 아직 미검증입니다.
 - 테스트: 점프 2회 후 ESC → Resume → 점프 2회, ESC → Restart → 점프 2회, 점프 홀드 중 ESC → Resume → 추가 점프. 실패 시 [FWC] lifecycle, filtered, reconcile 메시지와 CSV를 공유해 주세요.
+
+## v0.2.0 실험용 Macro Replay
+- 사용자 테스트에서 v0.1.2의 ESC Resume/Restart 및 홀드 일시정지가 통과했습니다.
+- Geode 설정에서 `Replay on pause restart (test)`를 켜세요 (기본 OFF). `Record inputs`도 ON.
+- Create > My Levels에서 길고 평평한 로컬 일반 모드 테스트 레벨을 만든 후, 에디터 내부가 아닌 레벨 정보 화면에서 Play로 진입하세요. Start Pos, Practice, CBF, Click Between Steps, TPS 및 다른 매크로 모드를 끄세요.
+- 점프 3회 이상을 각각 누르고 완전히 뗀 후 죽거나 클리어하기 전에 ESC > Restart. 아무 입력 없이 HUD를 관찰하세요. 원본 시도의 이벤트를 메모리에 복사하여 새 시도에서 한 번만 재생합니다. 사망/종료/일시정지는 재생 중단 또는 종료를 일으킵니다. 재생이 끝나면 일반 입력이 다시 허용되며 다음 재시작부터 다시 녹화합니다.
+- Replay에서는 원본 `processQueuedButtons` 진입 시점과 실제 입력 시점의 내부 카운터가 일치하는 경우에만 이벤트를 주입합니다. 실제 엔진 함수 내부의 순서는 미검증입니다. `inside_queue`가 0인 이벤트, 반쪽 틱, 불완전 홀드, pause-sync 등은 거절합니다.
+- `replay-...-done.csv` / `replay-...-stopped.csv`는 기존 save directory에 저장됩니다. 각 입력 직전 좌표의 오차 및 틱을 비교합니다. `inputs matched`는 전체 입력 주입 및 관측 좌표 오차 0.1 GD 좌표 단위 이하를 의미하며, 전체 레벨의 동일한 결과/클리어를 보장하지 않습니다. `position diverged`는 입력은 모두 주입했으나 좌표가 다름을 의미합니다.
+- 실패하면 원본 fwc CSV, replay CSV (0개 주입이면 헤더만 있을 수 있음), [FWC] 로그를 보내세요. 자동 리플레이는 로컬 레벨만 지원하며 검증/기록 제출용이 아닙니다. 기존 CSV import, 완료 시도 재생, 재생 저장/불러오기, 체크포인트, Frame Window 계산은 미구현입니다.
+- Geode SDK 전체 빌드 및 런타임 재현은 미검증이며, 순수 C++ 테스트만 실행했습니다.
