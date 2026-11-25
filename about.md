@@ -1,3 +1,3 @@
-# Open Frame Window Counter
+# OpenFWC v0.4.0
 
-Experimental input recording, local macro replay, and opt-in native practice checkpoint restore diagnostics for GD 2.2091. No frame window calculation yet.
+Experimental local-level single-jump timing scan, verified-input replay, input recorder and native checkpoint diagnostics. The window scan is opt-in and limited to ±8 ticks with a fixed observation horizon.

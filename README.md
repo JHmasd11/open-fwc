@@ -82,3 +82,16 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - 사용자 실측 2회에서 tick 오프셋 +3214/+6428은 일정했고 다른 기록 값은 정확히 일치했습니다. 절대 tick 값 대신 상대 증가량을 검증합니다. Progress, Command, 시간, 물리 검증 기준은 변경하지 않았습니다.
 - CSV에 `tick_offset`, `reference_tick_offset`, `relative_tick_error`를 추가하고 원시 값도 유지합니다. 상대 오차가 0이 아니면 실패합니다.
 - 전체 물리 상태 일치나 다른 레벨에서의 정확성을 보장하지 않습니다.
+
+## v0.4.0: bounded single-jump window scan (experimental)
+
+This is a diagnostic for local classic single-player levels. It is not a complete-level
+frame-window proof. It deliberately uses full restarts, not checkpoint acceleration.
+
+1. Enable **Single-jump window scan (test)** in mod settings. Keep Record inputs and Show recorder HUD on. Disable CBF, TPS changes, noclip, other macro mods, Practice Mode, Start Pos, and dual. Keep native auto-retry enabled.
+2. Make a long flat local level, preferably with one spike well before the end. Enter from the level info screen. Record exactly one P1 jump (press and release), then survive at least 0.5 seconds after release without any more inputs. Pause and select Restart. The option takes precedence over Replay on pause restart.
+3. The scan replays the unmodified baseline first. It then tests offsets -1,+1,-2,+2,...,-8,+8 (240 TPS candidates), moving both press and release by the same offset, preserving hold length. All trials use the same horizon: 120 logic calls after the original release. The native automatic retry handles deaths; surviving trials request a full reset on the main thread. Do not interact until it finishes; pause cancels the scan. Use a level long enough to avoid completion before the horizon.
+4. Read `FW | N ticks | -L .. +R`. A result with `>=` touches the scan boundary and is only a lower bound. Only the contiguous surviving interval containing offset 0 is counted; other successful offsets are still listed in CSV. The trial status is survival through the sampled horizon, not completion of the whole level. Position error for shifted trials is expected and is not itself a failure. The baseline must survive, apply both inputs, and meet the original replay position tolerance (0.1 game units).
+5. `window-<session>-s<scan>.csv` is written after each trial and on cancellation to the existing save directory. Individual replay CSVs are still generated. A missing or mismatched input aborts the scan rather than being counted as a failed timing. If `FW | STOP` appears, provide the window report and `[FWC]` log.
+
+The 17 offsets, fixed half-second horizon, first and only P1 jump and default-off setting are intentional limitations for this experimental version. Full-level macros, independent press/release windows, larger/adaptive scans, automatic checkpoints, triggers, CBF and other modes are not validated here. Geode runtime and build are not verified by the source-only unit tests.

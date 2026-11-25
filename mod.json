@@ -6,9 +6,9 @@
   },
   "id": "openfwc.frame-window-counter",
   "name": "Open Frame Window Counter",
-  "version": "v0.3.1",
+  "version": "v0.4.0",
   "developer": "OpenFWC",
-  "description": "Stage 3: input replay and experimental native practice checkpoint validation.",
+  "description": "Stage 4: experimental single-jump timing window scan.",
   "settings": {
     "enabled": {
       "name": "Record inputs",
@@ -37,6 +37,12 @@
     "checkpoint-probe": {
       "name": "Checkpoint restore probe (test)",
       "description": "Local classic Practice Mode only. Disable auto checkpoints, manually place one, do not press gameplay inputs until the 120-sample baseline is ready, then die and compare the native respawn. Applied on next level entry.",
+      "type": "bool",
+      "default": false
+    },
+    "window-scan": {
+      "name": "Single-jump window scan (test)",
+      "description": "Local normal mode only. Record one jump, release, survive 0.5s, then pause and restart. Tests 17 offsets automatically. Takes precedence over replay-on-restart. Pause to stop.",
       "type": "bool",
       "default": false
     }

@@ -5,6 +5,8 @@
 #include <chrono>
 #include "replay.hpp"
 #include "checkpoint.hpp"
+#include "sweep.hpp"
+#include <Geode/loader/Loader.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
 
 using namespace geode::prelude;
@@ -18,6 +20,8 @@ struct Recorder {
     fwc::Replay replay;
     fwc::ReplayInputGate replayGate;
     fwc::CheckProbe probe;
+    fwc::Sweep sweep;
+    unsigned sweepSerial = 0;
     bool checkpointEnabled = false;
     std::uintptr_t checkpointToken = 0; // identity only, never dereferenced
     unsigned checkpointSerial = 0, restoreSerial = 0;
@@ -63,6 +67,13 @@ void updateHud() {
             case P::Failed: text += fmt::format("\nCP | FAIL | {}", p.reason); break;
         }
     }
+    using S = fwc::Sweep::Phase;
+    auto const& sw=state.sweep;
+    if (sw.busy()) text += fmt::format("\nFW | {}/{} | offset {:+} ticks", sw.trials.size(), sw.offsets.size(), sw.offset());
+    else if (sw.phase==S::Done) {
+        auto [lo,hi]=sw.window();
+        text += fmt::format("\nFW | {}{} ticks | {:+} .. {:+}", (lo==-fwc::Sweep::radius || hi==fwc::Sweep::radius)?">= ":"", hi-lo+1, lo,hi);
+    } else if (sw.phase==S::Aborted) text += "\nFW | STOP | " + sw.reason;
     if (!state.notice.empty()) text += "\n" + state.notice;
     state.hud->setString(text.c_str());
 }
@@ -117,9 +128,21 @@ void probeStep(GJBaseGameLayer* layer) {
         saveProbe(probe.phase == P::Ready ? "baseline" : probe.phase == P::Passed ? "matched" : "failed");
     } else if ((probe.phase == fwc::CheckProbe::Phase::Baseline ? probe.baseline.size() : probe.samples.size()) % 15 == 0) updateHud();
 }
+void saveSweep() {
+    auto path=Mod::get()->getSaveDir() / fmt::format("window-{}-s{}.csv",state.session,state.sweepSerial);
+    auto result=geode::utils::file::writeString(path,state.sweep.csv());
+    if(result.isErr()) log::error("[FWC] window CSV write failed: {}",result.unwrapErr());
+    log::info("[FWC] window trials={} reason={} file={}",state.sweep.trials.size(),state.sweep.reason,path.string());
+    updateHud();
+}
+void abortSweep(char const* reason) {
+    if(!state.sweep.busy()) return;
+    state.sweep.abort(reason); saveSweep();
+}
 void stopReplay(GJBaseGameLayer* layer, bool finished, char const* reason, bool release) {
     auto& r = state.replay;
     if (!r.running()) return;
+    if(state.sweep.running()) abortSweep(reason);
     r.phase = finished ? fwc::Replay::Phase::Finished : fwc::Replay::Phase::Failed;
     r.message = reason;
     auto held = std::move(r.held);
@@ -170,6 +193,29 @@ void startAttempt() {
     state.verbose = Mod::get()->getSettingValue<bool>("verbose-log");
     if (state.active) log::info("[FWC] attempt {} started", state.attemptId);
     updateHud();
+}
+void armSweep() {
+    if (!state.sweep.running() || !state.replayEligible || !state.active) {
+        abortSweep("invalid restart state"); return;
+    }
+    state.active=false;
+    state.replay.begin(state.sweep.shifted());
+    updateHud();
+}
+void finishTrial(GJBaseGameLayer* layer, bool alive) {
+    if(state.owner!=layer || !state.sweep.running() || !state.replay.running()) return;
+    auto session=state.session, attempt=state.attemptId;
+    state.sweep.result(alive,state.logicCall,state.replay.cursor,state.replay.maxError);
+    stopReplay(layer,alive,alive?"horizon reached":"player died",false);
+    saveSweep();
+    // Native death retry owns the death animation and scheduled respawn.
+    if(!state.sweep.pending() || !alive) return;
+    geode::queueInMainThread([session,attempt] {
+        if(state.session!=session || state.attemptId!=attempt || !state.owner || !state.sweep.pending()) return;
+        auto layer=static_cast<PlayLayer*>(state.owner);
+        if(layer->m_isPaused || state.pausePending || state.resetGate.depth) { abortSweep("paused before next trial"); return; }
+        layer->resetLevelFromStart();
+    });
 }
 void trace(char const* phase, PlayLayer* layer) {
     if (state.owner != layer) return;
@@ -249,8 +295,10 @@ struct ResetScope {
         }
     }
     ~ResetScope() {
-        if (engaged && state.owner == layer && state.session == session && state.resetGate.end())
+        if (engaged && state.owner == layer && state.session == session && state.resetGate.end()) {
             startAttempt();
+            if(state.sweep.next()) armSweep();
+        }
     }
 };
 }
@@ -322,8 +370,14 @@ class $modify(FWCPlayLayer, PlayLayer) {
         ResetScope guard(this, "restart-from-start");
         PlayLayer::resetLevelFromStart();
     }
+    void destroyPlayer(PlayerObject* player, GameObject* object) {
+        auto session=state.session, attempt=state.attemptId;
+        PlayLayer::destroyPlayer(player,object);
+        if(state.owner==this && state.session==session && state.attemptId==attempt && state.sweep.running() && m_player1 && m_player1->m_isDead)
+            finishTrial(this,false);
+    }
     void levelComplete() {
-        if (state.owner == this) { failProbe("level complete before sample end"); flushAttempt("complete"); updateHud(); }
+        if (state.owner == this) { abortSweep("level ended before horizon"); failProbe("level complete before sample end"); flushAttempt("complete"); updateHud(); }
         PlayLayer::levelComplete();
     }
     void pauseGame(bool unfocused) {
@@ -331,6 +385,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto session = state.session;
         if (ours) {
             trace("pause-before", this);
+            abortSweep("paused");
             if (state.replay.running()) stopReplay(this, false, "paused", true);
             state.pausePending = true;
         }
@@ -361,7 +416,15 @@ class $modify(FWCPlayLayer, PlayLayer) {
         auto session = state.session;
         std::vector<fwc::Event> macro;
         std::string rejection;
-        bool requested = state.owner == this && state.active && !checkpointMode(this) &&
+        bool scanRequested = state.owner == this && state.active && !checkpointMode(this) &&
+            Mod::get()->getSettingValue<bool>("window-scan");
+        fwc::Sweep newSweep;
+        std::string scanError;
+        if(scanRequested) {
+            if(!state.replayEligible || m_isPracticeMode || m_startPosObject || m_gameState.m_isDualMode) scanError="Use local single-player level from start";
+            else scanError=newSweep.begin(state.attempt,state.logicCall);
+        }
+        bool requested = !scanRequested && state.owner == this && state.active && !checkpointMode(this) &&
             Mod::get()->getSettingValue<bool>("replay-on-restart");
         if (requested) {
             if (!state.replayEligible || m_isPracticeMode || m_startPosObject) rejection = "Use a local level from start";
@@ -374,7 +437,11 @@ class $modify(FWCPlayLayer, PlayLayer) {
         }
         if (state.owner == this && state.session == session) {
             state.pausePending = m_isPaused;
-            if (requested && !macro.empty() && state.active && state.replayEligible) {
+            if(scanRequested) {
+                state.sweep=std::move(newSweep);
+                if(scanError.empty()) { ++state.sweepSerial; armSweep(); }
+                else { state.notice=scanError; log::warn("[FWC] scan rejected: {}",scanError); }
+            } else if (requested && !macro.empty() && state.active && state.replayEligible) {
                 state.active = false;
                 state.replay.begin(std::move(macro));
                 log::info("[FWC] replay armed A{}: {} events", state.attemptId, state.replay.events.size());
@@ -390,6 +457,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
     void onQuit() {
         if (state.owner == this) {
             trace("quit", this);
+            abortSweep("quit");
             failProbe("quit before sample end");
             flushAttempt("exit");
             state = Recorder{};
@@ -401,6 +469,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
             trace("onExit", this);
             // A temporary scene transition during pause is not an actual level quit.
             if (!state.pausePending && !m_isPaused && !state.resetGate.depth) {
+                abortSweep("exit");
                 failProbe("exit before sample end");
                 flushAttempt("exit");
                 state = Recorder{};
@@ -444,6 +513,15 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
             state.insideLogic = oldInside;
             state.halfTick = oldHalf;
             state.lastTick = oldLast;
+            if (state.sweep.running()) {
+                if (!m_player1 || m_gameState.m_isDualMode || m_isPracticeMode || m_startPosObject) {
+                    stopReplay(this,false,"unsupported scan state",true);
+                } else if (m_player1->m_isDead) finishTrial(this,false);
+                else if (state.logicCall >= state.sweep.horizon) {
+                    if (state.replay.next()) stopReplay(this,false,"missing input before horizon",true);
+                    else finishTrial(this,true);
+                }
+            }
             auto next = state.replay.next();
             if (state.replay.running() && next && next->logicCall <= state.logicCall) {
                 log::warn("[FWC] missed queue: expected logic={} progress={} tick={} command={} time={:.9f}; after command logic={} progress={} tick={} command={} time={:.9f}",
@@ -495,6 +573,7 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
                     break;
                 }
                 if (!state.replay.next()) {
+                    if(state.sweep.running()) { updateHud(); break; }
                     bool matched = state.replay.maxError <= 0.1;
                     stopReplay(this, matched, matched ? "inputs matched" : "position diverged", false);
                     break;
@@ -508,6 +587,7 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool isPlayer1) {
         if (down && checkpointMode(this) && !state.pausePending && !state.resetGate.depth) failProbe("input during sample");
         // Physical inputs cannot mix with a running diagnostic replay.
+        if(state.owner==this && state.sweep.pending() && !state.resetGate.depth) return;
         if (state.owner == this && state.replay.running()) {
             if (state.replayGate.blocks(true)) return;
             GJBaseGameLayer::handleButton(down, button, isPlayer1);
