@@ -1,4 +1,4 @@
-# Open Frame Window Counter (v0.1.0)
+# Open Frame Window Counter (v0.1.1)
 
 GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 
@@ -6,7 +6,7 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 1. GitHub에 빈 repository를 생성합니다 (예: open-fwc).
 2. 이 ZIP을 풀고 내부 파일 전체(CMakeLists.txt, mod.json, src, tests, .github 등)를 저장소 루트에 커밋합니다. .github/workflows/build.yml 누락 주의.
 3. Actions > Build OpenFWC > Run workflow (push to main 시 자동 실행).
-4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.1.0 ZIP을 받습니다.
+4. unit-test, Windows, Android32, Android64, package가 모두 성공하면 Artifacts의 OpenFWC-v0.1.1 ZIP을 받습니다.
 5. ZIP 안의 .geode를 Geode의 mods 폴더에 복사하고 게임을 재시작합니다. SDK 및 로더 버전 6.0.0을 사용하세요.
 
 ## 테스트 절차
@@ -24,9 +24,16 @@ GD 2.2091 / Geode 6.0.0 / Windows x64, Android ARM32 and ARM64.
 - CSV는 재시작, 완료, 레벨 종료 시 시도별로 저장합니다. 입력 없는 시도는 파일이 생성되지 않습니다. 비정상 종료 시 현재 시도는 잃을 수 있고, 파일 저장 실패는 로그에 표시됩니다.
 - HUD와 기록은 일반 PlayLayer 대상으로 개발했습니다. 에디터 내 플레이테스트는 지원 대상이 아닙니다. 연습 모드의 체크포인트 복원 타이밍은 아직 검증하지 않았습니다.
 - 입력은 변경하지 않습니다. 입력 리플레이, 프레임 윈도우 측정, CBF 지원은 이후 단계입니다.
-- 모드 SDK 컴파일 및 실제 실행은 아직 검증하지 않았습니다. 순수 C++ 기록/CSV 테스트만 로컬에서 실행할 수 있습니다.
+- v0.1.0은 사용자 환경에서 컴파일과 CSV 기록을 확인했습니다. v0.1.1의 SDK 컴파일 및 실제 실행은 아직 검증하지 않았습니다.
 
 ## 개발 참고
 - https://github.com/geode-sdk/geode/releases/tag/v6.0.0
 - https://github.com/geode-sdk/bindings/tree/main/bindings/2.2091
 - https://github.com/geode-sdk/build-geode-mod
+
+## v0.1.1 변경 사항
+- 초기 UP 및 중복 입력은 P1/P2/버튼별 상태 추적으로 필터링합니다. 실제 게임 입력은 변경하지 않습니다. 시작 시 이미 눌린 버튼의 상태 및 연습 모드 복원은 미검증입니다.
+- resetLevelFromStart와 resetLevel을 중첩 보호하며, 진행 카운터 역행을 보조 감지합니다. ESC 재시작 실기기 검증이 필요합니다.
+- CSV에 tick_240_candidate(-1=불확실), level_id, level_name, end_reason을 추가합니다. 후보 값은 수집된 일반 모드 데이터에서만 검증된 관계를 적용합니다.
+- Windows runner는 windows-2022로 고정합니다.
+- 파일 저장 위치는 기존과 동일합니다. 입력 없는 시도는 CSV가 생성되지 않습니다.

@@ -14,6 +14,11 @@ struct Recorder {
     CCLabelBMFont* hud = nullptr; // owned by PlayLayer
     fwc::Attempt attempt;
     std::uint64_t session = 0, attemptId = 0, logicCall = 0;
+    fwc::ResetGate resetGate;
+    std::string levelName;
+    int levelId = 0;
+    bool haveProgress = false;
+    unsigned lastProgress = 0;
     bool active = false, verbose = true, insideLogic = false, halfTick = false, lastTick = false;
 };
 Recorder state;
@@ -23,7 +28,7 @@ void updateHud() {
     if (!state.hud) return;
     std::string text;
     if (!state.active) text = "FWC | Idle";
-    else if (state.attempt.events.empty()) text = fmt::format("FWC | A{} | Ready", state.attemptId);
+    else if (state.attempt.events.empty()) text = fmt::format("FWC | A{} | 0 down / 0 up", state.attemptId);
     else {
         auto const& e = state.attempt.events.back();
         text = fmt::format("FWC | A{} | {} down / {} up\nP{} {} | step {} | x {:.1f}",
@@ -38,7 +43,7 @@ void flushAttempt(char const* reason) {
     if (state.attempt.events.empty()) return;
     auto dir = Mod::get()->getSaveDir();
     auto path = dir / fmt::format("fwc-{}-a{}-{}.csv", state.session, state.attemptId, reason);
-    auto result = geode::utils::file::writeString(path, state.attempt.csv());
+    auto result = geode::utils::file::writeString(path, state.attempt.csv(state.levelName, state.levelId, reason));
     if (result.isErr()) {
         log::error("[FWC] CSV write failed for attempt {}: {}", state.attemptId, result.unwrapErr());
     } else {
@@ -51,12 +56,30 @@ void startAttempt() {
     state.attempt.clear();
     ++state.attemptId;
     state.logicCall = 0;
+    state.haveProgress = false;
     state.insideLogic = state.halfTick = state.lastTick = false;
     state.active = Mod::get()->getSettingValue<bool>("enabled");
     state.verbose = Mod::get()->getSettingValue<bool>("verbose-log");
     if (state.active) log::info("[FWC] attempt {} started", state.attemptId);
     updateHud();
 }
+// Guard nested resetLevelFromStart -> resetLevel calls; finalize once.
+struct ResetScope {
+    GJBaseGameLayer* layer;
+    std::uint64_t session;
+    bool engaged;
+    ResetScope(GJBaseGameLayer* owner, char const* reason)
+        : layer(owner), session(state.session), engaged(state.owner == owner) {
+        if (engaged && state.resetGate.begin()) {
+            flushAttempt(reason);
+            updateHud();
+        }
+    }
+    ~ResetScope() {
+        if (engaged && state.owner == layer && state.session == session && state.resetGate.end())
+            startAttempt();
+    }
+};
 }
 
 class $modify(FWCPlayLayer, PlayLayer) {
@@ -66,6 +89,7 @@ class $modify(FWCPlayLayer, PlayLayer) {
         if (state.owner) flushAttempt("replaced");
         state = Recorder{};
         state.owner = this;
+        if (level) { state.levelName = level->m_levelName; state.levelId = level->m_levelID.value(); }
         auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         state.session = static_cast<std::uint64_t>(micros) + (++sessionSerial);
@@ -86,10 +110,12 @@ class $modify(FWCPlayLayer, PlayLayer) {
         return true;
     }
     void resetLevel() {
-        bool ours = state.owner == this;
-        if (ours) flushAttempt("reset");
+        ResetScope guard(this, "reset");
         PlayLayer::resetLevel();
-        if (ours && state.owner == this) startAttempt();
+    }
+    void resetLevelFromStart() {
+        ResetScope guard(this, "restart-from-start");
+        PlayLayer::resetLevelFromStart();
     }
     void levelComplete() {
         if (state.owner == this) { flushAttempt("complete"); updateHud(); }
@@ -106,6 +132,18 @@ class $modify(FWCPlayLayer, PlayLayer) {
 
 class $modify(FWCBaseLayer, GJBaseGameLayer) {
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        // A missed restart can be detected by the engine progress counter rewinding.
+        // This fallback is diagnostic; practice/checkpoint restores are not validated.
+        if (state.owner == this && state.active && !state.resetGate.depth) {
+            auto progress = m_gameState.m_currentProgress;
+            if (state.haveProgress && progress < state.lastProgress) {
+                log::info("[FWC] progress rewind {} -> {}", state.lastProgress, progress);
+                flushAttempt("progress-rewind");
+                startAttempt();
+            }
+            state.lastProgress = progress;
+            state.haveProgress = true;
+        }
         bool ours = state.owner == this && state.active;
         auto session = state.session;
         auto attemptId = state.attemptId;
@@ -143,11 +181,12 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
                 e.down = down;
                 e.x = pos.x; e.y = pos.y;
                 e.dead = player->m_isDead;
-                state.attempt.push(e);
+                if (state.attempt.push(e)) {
                 if (state.verbose) log::info("[FWC] A{} #{} P{} {} b{} progress={} tick={} logic={} t={:.6f} xy=({:.2f},{:.2f})",
                     state.attemptId, state.attempt.events.size(), e.player, down ? "DOWN" : "UP", button,
                     e.progress, e.tickIndex, e.logicCall, e.levelTime, e.x, e.y);
                 updateHud();
+                }
             }
         }
         // Observer only: do not alter, delay, suppress or replay game input.

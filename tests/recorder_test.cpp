@@ -5,17 +5,25 @@
 int main() {
     fwc::Attempt a;
     fwc::Event e{};
-    e.progress = 120; e.tickIndex = 3; e.commandIndex = 2; e.logicCall = 121;
-    e.player = 1; e.button = 1; e.down = true; e.x = 12.5f; e.y = -3.f;
-    a.push(e);
-    e.down = false; e.player = 2; e.progress = 125;
-    a.push(e);
-    assert(a.presses == 1 && a.releases == 1 && a.events.size() == 2);
-    auto csv = a.csv();
-    assert(csv.find("1,120,3,2,121,0,0,0,0,0,1,1,1,12.5,-3,0\n") != std::string::npos);
-    assert(csv.find("2,125,3,2,121,0,0,0,0,0,2,1,0,12.5,-3,0\n") != std::string::npos);
-    assert(std::count(csv.begin(), csv.end(), '\n') == 3);
-    a.clear();
-    assert(a.events.empty() && a.presses == 0 && a.releases == 0);
-    std::cout << "Recorder and CSV tests passed\n";
+    e.player = 1; e.button = 1;
+    assert(!a.push(e)); // startup release
+    e.down = true; e.progress = 66; e.tickIndex = 66; e.commandIndex = 66;
+    e.logicCall = 33; e.insideLogic = true; e.levelTime = 32.0 / 240; e.x = 12.5f;
+    assert(fwc::tickCandidate(e) == 32);
+    assert(a.push(e)); assert(!a.push(e));
+    e.player = 2; assert(a.push(e)); // independent P2
+    e.button = 2; assert(a.push(e)); // independent button
+    e.down = false; assert(a.push(e)); assert(!a.push(e));
+    e.button = 1; assert(a.push(e));
+    e.player = 1; assert(a.push(e));
+    assert(a.presses == 3 && a.releases == 3 && a.events.size() == 6);
+    auto csv = a.csv("test, \"quoted\"", 42, "reset");
+    assert(csv.find("32,42,\"test, \"\"quoted\"\"\",\"reset\"\n") != std::string::npos);
+    assert(std::count(csv.begin(), csv.end(), '\n') == 7);
+    e.halfTick = true; assert(fwc::tickCandidate(e) == -1);
+    e.halfTick = false; e.levelTime = 1; assert(fwc::tickCandidate(e) == -1);
+    a.clear(); assert(a.events.empty() && a.presses == 0 && a.releases == 0 && a.held.empty());
+    assert(!a.push(e)); e.down = true; assert(a.push(e));
+    fwc::ResetGate gate; assert(gate.begin()); assert(!gate.begin()); assert(!gate.end()); assert(gate.end()); assert(!gate.end());
+    std::cout << "Recorder, independent inputs, tick candidate, reset gate and CSV tests passed\n";
 }

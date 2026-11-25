@@ -3,7 +3,7 @@
   "gd": {"win": "2.2091", "android": "2.2091"},
   "id": "openfwc.frame-window-counter",
   "name": "Open Frame Window Counter",
-  "version": "v0.1.0",
+  "version": "v0.1.1",
   "developer": "OpenFWC",
   "description": "Stage 1: input recorder and timing diagnostics. No automated window analysis yet.",
   "settings": {
