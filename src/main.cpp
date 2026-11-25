@@ -574,7 +574,7 @@ class $modify(FWCBaseLayer, GJBaseGameLayer) {
         }
         if (ours && fastBusy() && state.replay.running() && !state.resetGate.depth) {
             auto& f=state.fast;
-            auto play=static_cast<PlayLayer*>(this);
+            auto play=static_cast<PlayLayer*>(state.owner);
             ++f.totalCalls;
             if(isHalfTick || !m_isPracticeMode || m_isPlatformer || !m_player1 || m_player1->m_isDead || m_gameState.m_isDualMode || m_startPosObject) {
                 stopReplay(this,false,"unsupported fast scan state",true);
